@@ -1,10 +1,10 @@
 # coding: utf-8
 lib = File.expand_path('../lib', __FILE__)
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
-require 'ruby-ogg/version'
+require 'ogg-version'
 
 Gem::Specification.new do |spec|
-  spec.name          = "ruby-ogg"
+  spec.name          = "ogg"
   spec.version       = Ogg::VERSION
   spec.authors       = ["Aiden Nibali"]
   spec.email         = ["dismal.denizen@gmail.com"]

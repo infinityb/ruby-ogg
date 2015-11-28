@@ -1,4 +1,5 @@
 $VERBOSE = false # Suppresses some BinData warnings.
+
 require 'bindata'
 
 require 'stringio'
@@ -7,17 +8,17 @@ module Ogg
   # This is a superclass for all custom defined Ogg decoding errors
   class DecodingError < StandardError
   end
-  
+
   # This error is raised when the file format is not valid Ogg
   class MalformedFileError < DecodingError
   end
-  
+
   # Ogg::Decoder is used to decode Ogg bitstreams. The easiest way of properly
   # parsing an Ogg file is to read consecutive packets with the read_packet
   # method. For example:
   #
   #  require 'ogg'
-  #  
+  #
   #  open("file.ogg", "rb") do |file|
   #    dec = Ogg::Decoder.new(file)
   #    packet = dec.read_packet
@@ -29,25 +30,25 @@ module Ogg
   # is a section of the Ogg container used as a means of storing packets.
   # Since packets are what contain the "juicy bits" of the file, Ogg::Decoder
   # provides sufficient abstraction to make handling of individual pages
-  # unnecessary. However, if you do need to read pages, that functionality is 
+  # unnecessary. However, if you do need to read pages, that functionality is
   # available via the read_page method.
   class Decoder
     # This property determines whether the integrity of pages should be checked
     # using CRCs (a lot slower but more robust).
     attr_accessor :verify_checksum
-    
+
     # Create a new Decoder from an IO which should be open for binary reading.
     def initialize io, opts={}
       @io = io
       @packets = []
-      
+
       opts = {
         :verify_checksum => false,
       }.merge!(Hash[opts.map {|k, v| [k.to_s.downcase.to_sym, v]}])
-      
+
       @verify_checksum = opts[:verify_checksum]
     end
-    
+
     # Moves the file cursor forward to the next potential page. You probably
     # wish to use the read_page method, which does some validation and actually
     # returns the parsed page.
@@ -61,7 +62,7 @@ module Ogg
         end
         (buffer = buffer[1..-1] << @io.read(1)) rescue Exception
       end
-      
+
       raise EOFError
     end
 
@@ -81,7 +82,7 @@ module Ogg
       end
       return page
     end
-    
+
     # Seek to and read the last page in the bitstream.
     def read_last_page
       raise 'Last page can only be read from a file stream' unless @io.is_a? File
@@ -90,10 +91,10 @@ module Ogg
 			while pos > 0
 				@io.seek pos, IO::SEEK_SET
 				sio = StringIO.new @io.read(buffer_size)
-				
+
 				dec = Decoder.new(sio)
 				sub_pos = nil
-				
+
 				# Find last page in buffer
         loop do
           begin
@@ -109,28 +110,28 @@ module Ogg
           page = read_page
           return page
         end
-        
+
 				pos -= buffer_size * 2 - ('OggS'.size - 1)
 			end
-			
+
 			# This means that the Ogg file contains no pages
 			raise MalformedFileError
     end
-    
+
     # Seek to and read the next packet in the bitstream. Returns a string
     # containing the packet's binary data or nil if there are no packets
     # left.
     def read_packet
       return @packets.pop unless @packets.empty?
-      
+
       while @packets.empty?
         page = read_page
         raise EOFError.new("End of file reached") if page.nil?
         input = StringIO.new(page.data)
-        
+
         page.segment_table.each do |seg|
           @partial ||= ""
-          
+
           @partial << input.read(seg)
           if seg != 255
             @packets.insert(0, @partial)
@@ -138,15 +139,15 @@ module Ogg
           end
         end
       end
-      
+
       return @packets.pop
     end
   end
-  
+
   # A BinData::Record which represents an Ogg page.
   class Page < BinData::Record
     endian   :little
-    string   :capture, :value => 'OggS', :read_length => 4
+    string   :capturex, :value => 'OggS', :read_length => 4
     uint8    :version, :value => 0
     uint8    :page_type
     uint64   :granule_position
@@ -156,28 +157,28 @@ module Ogg
     uint8    :page_segments
     array    :segment_table, :type => :uint8, :initial_length => :page_segments
     string   :data, :read_length => lambda {segment_table.inject(0){|t,e| t+e}}
-    
+
     # Check page data against the header's CRC value.
     def correct_checksum?
       poly = 0x04c11db7
-      
+
       cs = checksum + 0
       self.checksum = 0
-      
+
       raw = to_binary_s
-      
+
       crc_reg = 0;
-      
+
       raw.unpack('C*').each do |byte|
         crc_reg = (crc_reg << 8) ^ CRC_LOOKUP[((crc_reg >> 24) & 0xff) ^ byte]
         crc_reg %= 2**32
       end
-      
+
       self.checksum = cs
-      
+
       return cs == crc_reg
     end
-    
+
     # Cached CRC lookup table.
     CRC_LOOKUP = [
       0x00000000,0x04c11db7,0x09823b6e,0x0d4326d9,
@@ -244,6 +245,144 @@ module Ogg
       0x9abc8bd5,0x9e7d9662,0x933eb0bb,0x97ffad0c,
       0xafb010b1,0xab710d06,0xa6322bdf,0xa2f33668,
       0xbcb4666d,0xb8757bda,0xb5365d03,0xb1f740b4].freeze
+  end
+
+  module Vorbis
+    # This class reads metadata (such as comments/tags and bitrate) from Vorbis
+    # audio files. Here's an example of usage:
+    #
+    #  require 'vorbis'
+    #
+    #  Vorbis::Info.open('echoplex.ogg') do |info|
+    #    info.comments[:artist].first #=> "Nine Inch Nails"
+    #    info.comments[:title].first  #=> "Echoplex"
+    #    info.sample_rate             #=> 44100
+    #  end
+    #
+    # You may notice that for each comment field an array of values is
+    # available. This is because it is perfectly valid for a Vorbis file
+    # to have multiple artists, titles, or anything else.
+    class Info
+      attr_reader :identification_header, :comment_header
+      attr_reader :comments
+      attr_reader :duration, :sample_rate, :nominal_bitrate, :channels, :bitrate
+
+      # Create a new Vorbis::Info object for reading metadata.
+      def initialize(path, container=:ogg)
+        if path.is_a? IO
+          @io = path
+        else
+          @io = open(path, 'rb')
+        end
+
+        case container
+        when :ogg
+          init_ogg
+        else
+          raise "#{container.to_s} is not a supported container format"
+        end
+
+        @io.close
+
+        yield self if block_given?
+      end
+
+      def self.open(*args, &block)
+        return self.new(*args, &block)
+      end
+
+      # Read Vorbis metadata from within an Ogg container.
+      private
+      def init_ogg
+        require 'ogg'
+
+        parser = Ogg::Decoder.new @io
+
+        @identification_header = IdentificationHeader.read(parser.read_packet)
+        @sample_rate = @identification_header.audio_sample_rate
+        @nominal_bitrate = @identification_header.bitrate_nominal
+        @channels = @identification_header.audio_channels
+
+        @comment_header = CommentHeader.read(parser.read_packet)
+        @comments = @comment_header.comments
+
+        pos_after_headers = @io.pos
+
+        begin
+          # Duration is last granule position divided by sample rate
+          pos = parser.read_last_page.granule_position.to_f
+          @duration = pos / @sample_rate
+        rescue Exception
+          @duration = 0
+        end
+
+        begin
+          @bitrate = (file.stat.size - pos_after_headers).to_f * 8 / @duration
+        rescue Exception
+          @bitrate = 0
+        end
+      end
+    end
+
+    # A BinData::Record which represents a Vorbis identification header.
+    class IdentificationHeader < BinData::Record
+      endian   :little
+      uint8    :packet_type, :value => 1
+      string   :codec, :value => 'vorbis', :read_length => 6
+      uint32   :vorbis_version
+      uint8    :audio_channels
+      uint32   :audio_sample_rate
+      int32    :bitrate_maximum
+      int32    :bitrate_nominal
+      int32    :bitrate_minimum
+      bit4     :blocksize_0
+      bit4     :blocksize_1
+    end
+
+    # A simple subclass of Hash which converts keys to uppercase strings.
+    class InsensitiveHash < Hash
+      def [](key)
+        super(key.to_s.upcase)
+      end
+
+      def []=(key, value)
+        super(key.to_s.upcase, value)
+      end
+    end
+
+    # A BinData::BasePrimitive which represents a list of comments as per
+    # the Vorbis I comment header specification.
+    class Comments < BinData::BasePrimitive
+      def read_and_return_value(io)
+        n_comments = read_uint32le(io)
+        comments = InsensitiveHash.new
+        n_comments.times do
+          length = read_uint32le(io)
+          comment = io.readbytes(length)
+          key, value = comment.split('=', 2)
+          (comments[key] ||= []) << value
+        end
+        return comments
+      end
+
+      def sensible_default
+        return {}
+      end
+
+      def read_uint32le(io)
+        return BinData::Uint32le.read(io)
+      end
+    end
+
+    # A BinData::Record which represents a Vorbis comment header.
+    class CommentHeader < BinData::Record
+      endian   :little
+      uint8    :packet_type, :value => 3
+      string   :codec, :value => 'vorbis', :read_length => 6
+      uint32   :vendor_length
+      string   :vendor_string, :read_length => :vendor_length
+      comments :comments
+    end
   end
 end
 
